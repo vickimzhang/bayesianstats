@@ -1,0 +1,1517 @@
+---
+title: "Project"
+author: "Vicki M. Zhang"
+date: "March 30, 2020"
+output: 
+   html_document:
+      toc: true
+      toc_depth: 4
+      toc_float: true
+      df_print: paged
+      code_folding: hide
+---
+
+# Introduction
+
+## Setting Up
+
+```{r setup, include = F}
+knitr::opts_chunk$set(message = F, warning = F)
+
+library(rethinking)
+library(tidyverse)
+library(dagitty)
+```
+
+
+## Data Description
+
+```{r}
+d <- read.csv("taraxacum_damage_2018.csv")
+str(d)
+```
+
+This dataset contains herbivore damage information of three species of Taraxacum: *T. officinale*, a widely-invasive dandelion, *T. lacerum*, the native and common dandelion, and *T. ceratophorum*, a native but more rare dandelion. Data was collected from five sites, three of which were within the Churchill townsite footprint, and the other two in the surrounding natural areas. However, herbivory data was not collected equally between species and between sites. *T. lacerum* data (N = 100) was collected from all five sites, while *T. officinale* (N = 60) was only found within Churchill, and thus data was only collected from sites 1, 2, and 3. *T. ceratophorum* data (N = 20) was only collected in site 2 within town.
+
+Sites:
+
+- Site 1: Manitoba Port sign (N edge of town)
+- Site 2: Town Square
+- Site 3: Town Complex (Hospital and school)
+- Site 4: Southern RR line on Goose Creek Road
+- Site 5: Goose Creek Pumping Station
+
+In-town sites (1, 2, 3) are arranged in order of least disturbed (1) to most disturbed (3).
+
+```{r}
+d %>% 
+   group_by(site, town, species) %>% 
+   tally()
+```
+
+
+The measures of herbivore damage are taken from the three largest leaves, which are also the three oldest leaves and are closest to the soil. However, since dandelions grow from a rosette, these three leaves may not differ greatly in terms of herbivore damage compared to other leaves around it. The table below displays the average percentage of herbivore damage for the three leaves in each species, as well as an averaged total damage across all three leaves.
+
+```{r}
+d <- d %>% 
+   dplyr::select(-plant, -date) %>% 
+   group_by(site, species) %>% 
+   mutate(avg = (leaf1 + leaf2 + leaf3) / 3)
+
+
+d %>% 
+   summarize(avf_leaf1 = mean(leaf1),
+             avg_leaf2 = mean(leaf2),
+             avg_leaf3 = mean(leaf3),
+             avg_total = mean(avg))
+```
+
+My model will aim to predict herbivore damage for *T. officinale* and *T. lacerum* in in-town sites (sites 1-3)
+
+First, I ensured that all measures of herbivory are numeric, and `site` are integers
+```{r}
+# as.numeric
+d$leaf1 <- as.numeric(d$leaf1)
+d$leaf2 <- as.numeric(d$leaf2)
+d$leaf3 <- as.numeric(d$leaf3)
+
+# as.numeric for site
+d$site <- as.integer(d$site)
+
+# check average herbivory measures
+d %>% 
+   group_by(site, species) %>% 
+   summarize(avg_leaf1 = mean(leaf1),
+             avg_leaf2 = mean(leaf2),
+             avg_leaf3 = mean(leaf3),
+             avg_total = mean(avg))
+
+```
+
+Create a new data frame `d_town` with only the observations in town.
+
+```{r}
+# data frame with only in-town observations
+d_town <- d %>%
+   mutate(avg = (leaf1 + leaf2 + leaf3) / 3) %>% 
+   dplyr::select(site, species, leaf1, leaf2, leaf3, avg) %>% 
+   filter(site == 1 |
+             site == 2 |
+             site == 3)
+
+```
+
+
+
+Create a new data frame `d_lac` with only _T. lacerum_ data. It might be interesting to just look at this one common native species, eventually.
+
+```{r}
+# data frame with only T. lacerum
+d_lac <- d %>% 
+   filter(species == "T_lacerum") %>% 
+   dplyr::select(site, town, leaf, herb)
+```
+
+
+
+In `d_town`, species is also a categorical variable. Here, I am indexing the species so that *T. lacerum* is indexed as `1` and *T. officinale* is indexed as `2`.
+```{r}
+d_town$species <- ifelse(d_town$species == "T_lacerum", 1, 2)
+str(d_town)
+```
+
+Summary:
+```{r}
+precis(d)
+precis(d_cerat)
+precis(d_town)
+```
+
+# Model 1: Predicting Herbivory
+
+Plot `leaf1`, `leaf2`, `leaf3` and `avg` (average herbivory) by `species`, where `1` is *T. lacerum* and `2` is *T. officinale*.
+```{r}
+plot(d_town$leaf1 ~ d_town$species)
+plot(d_town$leaf2 ~ d_town$species)
+plot(d_town$leaf3 ~ d_town$species)
+plot(d_town$avg ~ d_town$species)
+```
+
+- there may be a relationship here, where *T. lacerum* has less herbivory damage than *T. officinale*
+- one *T. lacerum* outlier
+
+
+## Variables and DAG
+
+The model will use the variables of `species`, `leaf1`, `leaf2` and `leaf3` to predict total herbivory in town. Different sites `site` and other unknown variables (U) may affect herbivore damage as well.
+
+Below is the DAG for this model. I am predicting total herbivory using the average herbivore damage measurement (avg), and species (sp). Unknown variables (U), such as site, may affect herbivore damage as well. 
+
+```{r}
+d_dag <- dagitty("dag {
+            sp -> HD 
+            avg -> HD 
+            sp -> avg 
+            U -> HD
+            } ")
+
+coordinates(d_dag) <-  list(x = c(sp = 0, HD = 1, avg = 2, U = 1),
+                                y = c(sp = 0, HD = 1, avg = 0, U = 2))
+drawdag(d_dag)
+```
+
+Variables
+
+   - `species` is categorical: *T. lacerum*, *T. officinale*
+   - `leaf1`, `leaf2` and `leaf3` are continuous (percentages) but are low
+   - `site` is an integer: 1, 2, 3
+
+
+Distribution of `avg`
+```{r}
+dens(d_town$avg)
+```
+
+- not Gaussian distribution but let's just keep going for now
+- empirical distribution doesn't need to be Gaussin in order to justify using a Guassian probability distribution
+
+
+
+## Linear Model using normal prior
+
+Linear model of average herbivory `avg` by `species`:
+
+- `1` indexes to *T. lacerum* and `2` indexes to *T. officinale* (no order)
+- two $\alpha$ parameters, where `j` corresponds to species
+
+First pass at using binomial priors, using both `quap` and `ulam`
+
+$$avg_i \sim Binomial(\mu_i, \sigma)$$
+$$\mu_i = \alpha_{species[i]} + \beta_s site[i]$$
+
+$$\alpha_i \sim Normal(1, 0.1)$$
+
+$$\beta_i \sim Normal(0, 10)$$
+
+$$\sigma \sim Uniform(2, 5)$$
+
+
+### Priors
+
+Normal(1, 0.25) prior for $\alpha$
+```{r}
+curve(dnorm(x, 1, 0.1), from = 0, to = 100)
+```
+
+- mean of the distribution is around 1 (i.e., average of 1% herbivory)
+
+Normal(1, 3) prior for $\beta$
+```{r}
+curve(dnorm(x, 1, 3), from = -10, to = 50)
+```
+
+
+
+```{r}
+a <- dnorm(1e4, 1, 0.1)
+b <- rnorm(1e4, 1, 3)
+
+plot(NULL, xlim = range(d_town$species), ylim = c(-10, 50),
+     xlab = "species", ylab = "average herbivory %")
+abline(h = 0, lty = 2)
+
+x <- d_town$site
+
+mtext("b ~ dnorm(1, 3)")
+for(i in 1:N)
+  curve(a[1] + b[1] * x,
+        from = 1, to = 2, add = T,
+        col = col.alpha("black", 0.2))
+
+```
+
+Normal(0, 3) prior for $\beta$
+```{r}
+curve(dnorm(x, 0, 3), from = 0, to = 100)
+
+```
+
+
+```{r}
+a <- rnorm(1e4, 1, 0.1)
+b <- rnorm(1e4, 0, 3)
+
+plot(NULL, xlim = range(d_town$species), ylim = c(-10, 50),
+     xlab = "species", ylab = "average herbivory %")
+abline(h = 0, lty = 2)
+
+x <- d_town$species
+
+mtext("b ~ dnorm(0, 10)")
+for(i in 1:N)
+  curve(a[1] + b[1] * x,
+        from = 1, to = 2, add = T,
+        col = col.alpha("black", 0.2))
+
+```
+
+
+
+Uniform prior for $\sigma$ 
+```{r}
+curve(dunif(x, 2, 10), from = 0, to = 15)
+```
+
+
+
+
+```{r}
+N <- 100
+a_bar <- rlnorm(1, 0.5)
+sigma_a <- exp(1)
+a <- rlnorm(N, a_bar, sigma_a)
+b_bar <- rlnorm(0, 1.5)
+b <- rlnorm(N, b_bar, 1.5)
+sigma_g <- exp(1)
+g <- rlnorm(N, 0, sigma_g)
+
+
+plot(NULL, xlim = range(d_town_slim$species), ylim = c(-5, 100),
+     xlab = "species", ylab = "herb")
+for(i in 1:N)
+   curve(a[i] + b[i]*x + c[i],
+         from = 1, to = 2, add = T,
+         col = col.alpha("black", 0.2))
+```
+
+### quap1 model
+
+```{r}
+m1q <- quap(
+   alist(
+      avg ~ dbinom(mu, sigma),
+      mu <- a[species] + b[site],
+      a[species] ~ dnorm(1, 0.1),
+      b[site] ~ dnorm(0, 3),
+      sigma ~ dunif(2, 10)
+   ), data = d_town
+)
+
+precis(m1q, depth = 2)
+```
+
+- species `2`, *T. officinale*, has a higher herbivore damage percentage
+- the more disturbed sites have greater herbivory
+- did not capture the interaction between `species` and `site`
+
+
+
+#### Posterior inference
+
+I can't figure out how to plot the posterior inference against the data. Since both of my predictor variables are not continuous, I'm not really sure how the implied regression line should look.
+
+
+```{r}
+prior_m1q <- extract.prior(m1q)
+```
+
+```{r}
+plot(NULL, xlim = c(1, 2), ylim = c(-5, 15),
+     xlab = "species", ylab = "herbivory damage %")
+abline(h = 0)
+
+m1q_seq <- seq(from = 0, to = 2, length.out = 30)
+mu <- link(m1q, post = prior_m1q, data = data.frame(species = m1q_seq))
+for(i in 1:50)
+   lines(m1q_seq, mu[i, ], col = col.alpha("black", 0.3))
+```
+
+
+I also tried to use only a sample of the data to see the scatter. First, I sampled N number of rows from the data frame:
+
+```{r}
+set.seed(12)
+N <- 50
+dN <- d_town[sample(nrow(d_town), N),]
+head(dN)
+```
+
+Re-estimating the model:
+
+```{r}
+mN <- quap(
+   alist(
+      avg ~ dnorm(mu, sigma),
+      mu <- a[species] + b[site],
+      a[species] ~ dnorm(1, 0.1),
+      b[site] ~ dnorm(0, 3),
+      sigma ~ dunif(2, 10)
+   ), data = dN
+)
+
+precis(mN, depth = 2)
+```
+
+
+Using the `link` function:
+
+```{r}
+mu <- link(m1q)
+str(mu)
+```
+
+### quap2 model
+
+
+```{r}
+m2q <- quap(
+   alist(
+      avg ~ dnorm(mu, sigma),
+      mu <- a[species] + b[site],
+      a[species] ~ dnorm(1, 0.1),
+      b[site] ~ dnorm(0, 3),
+      sigma ~ dunif(2, 10)
+   ), data = d_town
+)
+
+precis(m2q, depth = 2)
+```
+
+#### Posterior inference
+
+```{r}
+plot(avg ~ species, data = d_town, col = rangi2)
+
+post_m1q <- extract.samples(m1q)
+a_map <- mean(post_m1q$a[species])
+b_map <- mean(post_m1q$b[site])
+curve(a_map + (b_map * x), add = TRUE)
+```
+
+```{r}
+N <- 50
+dN <- d_town[sample(nrow(d_town), N),]
+
+mN <- quap(
+   alist(
+      avg ~ dnorm(mu, sigma),
+      mu <- a[species] + bS * site,
+      a[species] ~ dnorm(1, 0.1),
+      bS ~ dnorm(0, 3),
+      sigma ~ dunif(2, 10)
+   ), data = dN
+)
+
+precis(mN, depth = 2)
+
+# plot 20 of these lines using model
+post <- extract.samples(mN, n = 20)
+
+plot(dN$species, dN$avg,
+     xlim = range(d_town$species), ylim = range(d_town$avg),
+     col = rangi2, xlab = "species", ylab = "average herbivory %")
+mtext(concat("N = ", N))
+
+for(i in 1:20)
+   curve(post$a[1] + post$bS[1] * x,
+         col = col.alpha("black", 0.3), add = T)
+```
+
+below doesn't work
+
+```{r}
+plot(NULL, xlim = c(1, 2), ylim = c(-5, 10),
+     xlab = "species", ylab = "herbivory damage %")
+abline(h = 0)
+
+m1q_seq <- seq(from = 0, to = 2, length.out = 30)
+mu <- link(m1q, post = prior_m1q, data = data.frame(species = m1q_seq))
+for(i in 1:50)
+   lines(m1q_seq, mu[i, ], col = col.alpha("black", 0.3))
+```
+
+
+
+- it appears that *T. lacerum* has less herbivory damage than *T. officinale*
+
+```{r}
+plot(avg ~ species, data = d_town, col = rangi2)
+map <- mean(post_m1q$avg)
+curve(map, add = TRUE)
+
+post_m1q <- extract.samples(m1q)
+```
+
+### quap3 model
+
+```{r}
+m3q <- quap(
+   alist(
+      avg ~ dnorm(mu, sigma),
+      mu <- a[species] + bS*site,
+      a[species] ~ dnorm(1, 0.1),
+      bS ~ dnorm(0, 3),
+      sigma ~ dunif(2, 10)
+   ), data = d_town
+)
+
+precis(m1q, depth = 2)
+```
+
+
+### which models?
+
+#### Prior predictive simulation
+
+1st simulation of plant herbivory by sampling from posterior
+```{r}
+sample_mu <- rnorm(1e4, 1, 0.1)
+sample_sigma <- runif(1e4, 2, 5)
+prior_avg <- rnorm(1e4, sample_mu, sample_sigma)
+dens(prior_avg)
+```
+
+- can't have negative herbivory, which this model says is possible
+
+
+
+1st simulation of plant herbivory by sampling from posterior
+```{r}
+sample_mu <- rnorm(1e4, 1, 0.1)
+sample_sigma <- runif(1e4, 0, 0.25)
+prior_avg <- rnorm(1e4, sample_mu, sample_sigma)
+dens(prior_avg)
+```
+
+
+
+First pass at priors for `a` and `b`. Simulating lines:
+```{r}
+# simulating lines
+set.seed(1)
+N <- 100
+a <- rnorm(N, 1, 0.1)
+b <- rnorm(N, 0, 0.25)
+dens(b, xlim = c(0, 1), adj = 0.1)
+
+
+# plotting simulated lines
+plot(NULL, xlim = range(d_town$species), ylim = c(-5, 10),
+     xlab = "species", ylab = "average herbivory damage (%)")
+abline(h = 0, lty = 2)
+mtext("b ~ dnorm(0, 0.25)")
+
+xbar <- mean(d_town$avg)
+for(i in 1:N)
+   curve(a[i] + b[i] * (x - xbar),
+         from = 1, to = 2, add = TRUE,
+         col = col.alpha("black", 0.2))
+```
+
+- this doesn't look too bad?
+
+
+
+Second pass: defining `b` as Log-Normal:
+$$\beta \sim Log-Normal(0, 1)$$
+
+
+```{r}
+set.seed(1)
+N <- 100
+a <- rnorm(N, 1, 0.1)
+b <- rlnorm(N, 0, 0.5)
+dens(b, xlim = c(0, 5), adj = 0.1)
+
+# plotting 2nd simulated lines
+
+plot(NULL, xlim = range(d_town$species), ylim = c(-5, 10),
+     xlab = "species", ylab = "average herbivory damage (%)")
+abline(h = 0, lty = 2)
+mtext("b ~ rlnorm(0, 0.25)")
+
+xbar <- mean(d_town$avg)
+for(i in 1:N)
+   curve(a[i] + b[i] * (x - xbar),
+         from = 1, to = 2, add = TRUE,
+         col = col.alpha("black", 0.2))
+```
+
+- not really sure which one is better here, normal or log-normal
+
+
+
+
+
+### ulam with logit
+
+
+
+```{r}
+m3q <- ulam(
+   alist(
+      species ~ dbinom(1, p),
+      logit(p) <- avg,
+      avg ~ dnorm(1, 0.1)
+   ), data = d_town
+)
+```
+
+
+
+
+
+## Linear Model using log-normal prior
+
+$$avg_i \sim Normal(\mu_i, \sigma)$$
+$$\mu_i = \alpha_{species[i]} + \beta_s site[i]$$
+
+$$\alpha_i \sim Normal(1, 0.1)$$
+
+$$\beta_i \sim Normal(0, 10)$$
+
+$$\sigma \sim Log-Normal(2, 5)$$
+
+Second pass: defining `b` as Log-Normal:
+$$\beta \sim Log-Normal(0, 1)$$
+
+
+```{r}
+set.seed(1)
+N <- 100
+a <- rnorm(N, 1, 0.1)
+b <- rlnorm(N, 0, 0.5)
+dens(b, xlim = c(0, 5), adj = 0.1)
+
+# plotting 2nd simulated lines
+
+plot(NULL, xlim = range(d_town$species), ylim = c(-5, 10),
+     xlab = "species", ylab = "average herbivory damage (%)")
+abline(h = 0, lty = 2)
+mtext("b ~ rlnorm(0, 0.25)")
+
+xbar <- mean(d_town$avg)
+for(i in 1:N)
+   curve(a[i] + b[i] * (x - xbar),
+         from = 1, to = 2, add = TRUE,
+         col = col.alpha("black", 0.2))
+```
+
+- not really sure which one is better here, normal or log-normal
+
+
+
+
+### Priors
+
+Plotting the $\sigma$ prior
+```{r}
+curve(dlnorm(x, 2, 10), from = 0, to = 15)
+```
+
+
+Linear model of average herbivory `avg` by `species`:
+
+- `1` indexes to *T. lacerum* and `2` indexes to *T. officinale* (no order)
+- two $\alpha$ parameters, where `i` corresponds to species
+
+
+## quap model
+
+```{r}
+m2q <- quap(
+   alist(
+      avg ~ dnorm(mu, sigma),
+      mu <- a[species] + b[site],
+      a[species] ~ dnorm(1, 0.1),
+      b[site] ~ dnorm(0, 3),
+      sigma ~ dlnorm(2, 10)
+   ), data = d_town
+)
+
+precis(m2q, depth = 2)
+```
+
+### Posterior inference
+
+Again, can't really figure out how to sample from the posterior.
+
+
+## ulam
+
+```{r}
+m2 <- ulam(
+   alist(
+      avg ~ dnorm(mu, sigma),
+      mu <- a[species] + b[site],
+      a[species] ~ dnorm(1, 0.1),
+      b[site] ~ dnorm(0, 3),
+      sigma ~ dlnorm(2, 10)
+   ), data = d_town_slim, chains = 1, cores = 4
+)
+
+show(m2)
+```
+
+- not really sure how many chains I should use
+
+```{r}
+precis(m2, depth = 2)
+```
+
+```{r}
+pairs(m2)
+```
+
+```{r}
+traceplot(m2)
+trankplot(m2, n_cols = 2)
+```
+
+
+### PPC `m1`
+
+
+Extract posterior.
+
+```{r}
+post_m1 <- extract.samples(m1.2)
+p_m1 <- inv_logit(post_m1$b)
+precis_plot(precis(as.data.frame(post_m1)))
+```
+
+
+```{r}
+m1_fit <- m1.2@stanfit
+posterior_m1 <- as.matrix(m1_fit)
+dim(posterior_m1)
+```
+
+
+
+```{r}
+tail(colnames(posterior_m1))
+hist(posterior_m1[,"b[1]"])
+```
+
+```{r}
+params <- c(names(m1_fit)[grep("a", names(m1_fit))],
+            names(m1_fit)[grep("b", names(m1_fit))])
+
+mcmc_areas(
+  posterior_m1, 
+  pars = params,
+  prob = 0.8,
+  prob_outer = 0.999,
+  point_est = "mean"
+)
+```
+
+### Posterior predictive checks
+
+```{r}
+y <- d_town_slim$herb
+
+# generate posterior predictions with "sim" in rethinking package
+y_rep1 <- sim(m1.2, n = 500)
+```
+
+This is just one of the plots you can make, but it's a ggplot object, so you can easily adjust it like I have done here with the rescaling.
+
+```{r}
+ppc_dens_overlay(y, y_rep1[1:50, ]) + scale_x_continuous(trans="log1p")
+ppc_freqpoly_grouped(y, y_rep1[1:2, ],
+                     group = d_town_slim$species,
+                     freq = FALSE) + 
+   yaxis_text(on = TRUE)
+```
+
+
+
+
+
+
+
+## `ulam` with without hierarchical effect of `site`
+
+The model, in mathematical form:
+
+$$avg \sim Poisson(leaf1, p_i)$$
+$$logit(p_i) = \alpha_{ind[i]} + \beta_{species[i]}$$
+$$\alpha_j \sim Normal(\overline \alpha, \sigma) for j = 1, 2, ... 120$$
+$$\overline \alpha \sim Normal(1, 0.25)$$
+
+$$\sigma_{\alpha} \sim Uniform(2, 10)$$
+$$\beta_j \sim Normal(0, 3) for j = 1, 2$$
+
+
+
+Approximate posterior
+```{r}
+set.seed(9)
+m4 <- ulam(
+   alist(
+      # regression
+      herb ~ dpois(lambda),
+      logit(lambda) <- a[ind] + b[species],
+      
+      # beta prior
+      b[species] ~ dnorm(0, 3),
+      
+      # adaptive priors
+      a[ind] ~ dnorm(a_bar, sigma_a),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.25),
+      sigma_a ~ dunif(2, 10)
+   ), data = d_town_slim, log_lik = T
+)
+```
+
+
+```{r}
+precis(m4, depth = 2)
+plot(precis(m4, depth = 2))
+```
+
+```{r}
+compare(m2, m4)
+```
+
+## `ulam` with hierarchical effect of `site` and `species`
+
+The model, in mathematical form:
+
+$$avg \sim Poisson(leaf1, p_i)$$
+$$logit(p_i) = \alpha_{ind[i]} + \beta_{species[i]} + \gamma_{{site}[i]}$$
+$$\alpha_j \sim Normal(\overline \alpha, \sigma) for j = 1, 2, ... 120$$
+$$\overline \alpha \sim Normal(1, 0.25)$$
+
+$$\sigma_{\alpha} \sim Uniform(2, 10)$$
+$$\beta_j \sim Normal(0, 3) for j = 1, 2$$
+
+$$\gamma_j \sim Normal(0, \sigma_{\gamma}) for j = 1, 2, 3$$
+$$\sigma_{\gamma} \sim exp(1)$$
+
+
+
+Approximate posterior
+```{r}
+set.seed(9)
+m5 <- ulam(
+   alist(
+      # regression
+      herb ~ dpois(lambda),
+      logit(lambda) <- a[ind] + b[species] + g[site],
+      
+      # adaptive priors
+      a[ind] ~ dnorm(a_bar, sigma_a),
+      b[species] ~ dnorm(0, sigma_b),
+      g[site] ~ dnorm(0, sigma_g),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.25),
+      sigma_a ~ dunif(2, 10),
+      sigma_b ~ dexp(1),
+      sigma_g ~ dexp(1)
+   ), data = d_town_slim, log_lik = T
+)
+```
+
+
+```{r}
+precis(m5, depth = 2)
+plot(precis(m5, depth = 2))
+```
+
+
+```{r}
+coeftab(m2, m5)
+```
+
+
+
+## another `ulam`?
+
+A second model with the interaction between `species` (species ID) and `site`. There's no $\sigma$ prior here, should I include one? idk?
+
+```{r}
+m4 <- ulam(
+   alist(
+      avg ~ dpois(lambda),
+      logit(lambda) <- a[species] + b[species] * site,
+      a[species] ~ dnorm(1, 0.1),
+      b[species] ~ dnorm(0, 3)
+   ), data = d_town_slim, chains = 4, log_lik = TRUE
+)
+
+show(m4)
+precis(m4, depth = 2)
+```
+
+- not really sure how many chains I should use
+
+```{r}
+precis(m4, depth = 2)
+```
+
+```{r}
+pairs(m4)
+```
+
+```{r}
+traceplot(m4)
+trankplot(m4, n_cols = 2)
+```
+
+
+```{r}
+plot_m7 <- mcmc_combo(m7_fit,
+           combo = c("dens_overlay", "trace"),
+           pars = c("sigma_g", "sigma_d"),
+           transformations = "log1p",
+           gg_theme = ggplot2::theme_classic() + legend_none())
+
+
+plot_m7.1 <- mcmc_combo(m7.1_fit,
+           combo = c("dens_overlay", "trace"),
+           pars = c("sigma_g"),
+           transformations = "log1p",
+           gg_theme = ggplot2::theme_classic() + legend_none())
+
+plot_m7.2 <- mcmc_combo(m7.2_fit,
+           combo = c("dens_overlay", "trace"),
+           pars = c("sigma_d"),
+           transformations = "log1p",
+           gg_theme = ggplot2::theme_classic() + legend_none())
+```
+
+
+
+# Model 2: Predicting in-town and out-of-town herbivory of *T. lacerum* 
+
+## Variables and DAG
+
+
+- whether individuals are in/out of town will be affected herbivore damage
+- species will have different herbivory damage
+- in/out of town affects species
+- also unknown variables!!!
+
+
+
+# MESSY CODE BELOW
+
+# Posterior predictions `m1`
+
+## Plotting regression intervals and contours
+
+
+Creating a sequence of 100 `species`:
+
+```{r}
+n <- 1e4
+sp_seq <- rep(1:2, length.out = n)
+```
+
+There are 100 columns in `lambda` for the 100 simulated values
+
+Using `link`:
+
+```{r}
+lambda <- link(m1, data = data.frame(species = sp_seq))
+str(lambda)
+```
+
+Plot distribution of $\lambda$ at each `species`
+
+```{r}
+plot(herb ~ species, d_town)
+
+for(i in 1:100)
+   points(sp_seq, lambda[i, ], pch = 16, col = col.alpha(rangi2, 0.1))
+```
+
+
+Use `apply` to summarize distribution of each `species`
+
+```{r}
+lmu <- apply(lambda, 2, mean)
+lci <- apply(lambda, 2, PI, prob = 0.89)
+```
+
+
+
+## Prediction Intervals
+
+```{r}
+post_m1 <- extract.samples(m1)
+p_m1 <- inv_logit(post_m1$a)
+precis_plot(precis(as.data.frame(p_m1)))
+```
+
+
+```{r}
+sim.sp <- sim(m1, data = list(species = sp_seq))
+str(sim.sp)
+```
+
+```{r}
+herb.PI <- apply(sim.sp, 2, PI, prob = 0.89)
+```
+
+```{r}
+plot(herb ~ species, d_town_slim, col = col.alpha(rangi2, 0.5))
+
+lines(sp_seq)
+
+shade(herb.PI, sp_seq)
+```
+
+
+```{r}
+pairs(m1)
+```
+
+
+
+
+# Posterior predictions
+
+## `m2` and `m2.2`
+```{r}
+precis(post_m2, depth = 2)
+str(post_m2)
+
+a_map <- mean(post_m2$a)
+b_map <- mean(post_m2$b)
+
+a_map
+b_map
+```
+
+```{r}
+post_m2$diff_sp <- post_m2$b[ ,1] - post_m2$b[, 2]
+precis(post_m2, depth = 2)
+```
+
+The calculation `diff_sp` is the expected difference in herbivory (out of 100) between *T. lacerum* and *T. officinale*.
+
+```{r}
+# postcheck(m2)
+```
+
+
+
+```{r}
+link(m2)
+```
+
+
+```{r}
+k <- PSIS(m2, pointwise = TRUE)$K
+plot(d_town$species, d_town$herb,
+     xlab = "species", ylab = "herbivory %",
+     col = rangi2, pch = ifelse(d_town$species == 1, 1, 16), lwd = 2,
+     ylim = c(0, 50), cex = 1 + normalize(k))
+
+ns <- 100
+site_seq <- seq(from = 1, to = 3, length.out = ns)
+
+# predictions for species 1
+lambda <- link(m2, data = data.frame(species = sp_seq, site = 1))
+lmu <- apply(lambda, 2, mean)
+lci <- apply(lambda, 2, PI)
+lines(site_seq, lmu, lty = 2, lwd = 1.5)
+shade(lci, site_seq, xpd = TRUE)
+
+# predictions for species 2
+lambda <- link(m2, data = data.frame(species = sp_seq, site = 2))
+lmu <- apply(lambda, 2, mean)
+lci <- apply(lambda, 2, PI)
+lines(site_seq, lmu, lty = 3, lwd = 1.5)
+shade(lci, site_seq, xpd = TRUE)
+```
+
+
+```{r}
+pairs(m2)
+```
+
+## `m2.4`
+
+The `link` function takes `ulam` approximation, sample from posterior distribution, and compute $\mu$ for each case in data, and sample from the posterior.
+
+```{r}
+mu <- link(m2.4)
+str(mu)
+```
+
+Each row is a sample from the posterior distribution, each column is a case (row) in the data.
+
+Now, I am calculating the distribution of $\mu$ for each unique species and leaf of each individual.
+
+```{r}
+# define sequence of `species` and `leaf` to compute predictions for
+n <- 100
+sp_seq <- rep(1:2, length.out = ns)
+leaf_seq <- rep(1:3, length.out = ns)
+```
+
+
+Plotting this all together
+
+```{r}
+plot(d_town_slim$species, d_town_slim$herb,
+     xlab = "species", ylab = "herbivory",
+     col = rangi2, pch = ifelse(d_town_slim$site == 1, 1,
+                                ifelse(d_town_slim$site == 2, 2, 4)),
+     ylim = c(0, 60))
+
+
+# predictions for site = 1
+mu <- link(m2.4, data = data.frame(species = sp_seq, leaf = leaf_seq))
+mu_mean <- apply(mu, 2, mean)
+mu_pi <- apply(mu, 2, PI, prob = 0.89)
+lines(sp_seq, mu_mean, lty = 2, lwd = 0.5)
+shade(mu_pi, sp_seq, xpd = TRUE)
+
+# predictions for site = 2
+mu <- link(m2.4, data = data.frame(species = sp_seq, leaf = 2))
+mu_mean <- apply(mu, 2, mean)
+mu_pi <- apply(mu, 2, PI, prob = 0.89)
+lines(sp_seq, mu_mean, lty = 3, lwd = 0.5)
+shade(mu_pi, sp_seq, xpd = TRUE)
+
+# predictions for site = 3
+mu <- link(m2.4, data = data.frame(species = sp_seq, leaf = 3))
+mu_mean <- apply(mu, 2, mean)
+mu_pi <- apply(mu, 2, PI, prob = 0.89)
+lines(sp_seq, mu_mean, lty = 0, lwd = 0.5)
+shade(mu_pi, sp_seq, xpd = TRUE)
+```
+
+- there is no difference between `site`, and minute differences between the 2 `species`, according to the model
+
+```{r}
+mu_mean <- apply(mu, 2, mean)
+mu_HPDI <- apply(mu, 2, HPDI, prob = 0.89)
+
+sim.herb <- sim(m2.4, data = list(species = sp_seq, leaf = leaf_seq))
+str(sim.herb)
+
+herb.PI <- apply(sim.herb, 2, PI, prob = 0.89)
+
+# plot
+plot(herb ~ species, data = d_town_slim, col = col.alpha(rangi2, 0.5))
+lines(sp_seq, mu_mean)
+shade(mu_HPDI, sp_seq)
+shade(herb.PI, sp_seq)
+```
+
+```{r}
+prior_m2.4 <- extract.prior(m2.4)
+```
+
+
+```{r}
+mu_sp1 <- link(m2.4, post = prior, data = data.frame(species = 1, leaf = leaf_seq))
+mu_sp2 <- link(m2.4, post = prior, data = data.frame(species = 2, leaf = leaf_seq))
+
+mu_sp1_mu <- apply(mu_sp1, 2, mean)
+mu_sp1_ci <- apply(mu_sp1, 2, PI, prob =  0.97)
+mu_sp2_mu <- apply(mu_sp2, 2, mean)
+mu_sp2_ci <- apply(mu_sp2, 2, PI, prob =  0.97)
+
+plot(NULL, xlim = c(1, 2), ylim = c(-5, 50),
+     xlab = "species", ylab = "herbivory damage")
+lines(mu_sp1_mu, mu_sp2_mu)
+shade(mu_sp1_ci, sp_seq)
+shade(mu_sp2_ci, sp_seq)
+```
+
+
+On the natural scale (code incomplete)
+
+```{r}
+plot(d_town)
+```
+
+
+Plot and compare posterior means from `m3` and `m4`. 
+
+The function `apply` applies a function to a matrix
+
+```{r}
+# extract sample
+post_m8 <- extract.samples(m8)
+
+d_town$herb.est <- logistic(apply(post_m8$b, 2, mean))
+```
+
+```{r testing out code}
+precis(post_m8$b)
+```
+
+
+```{r}
+# extract sample
+post_m8 <- extract.samples(m8)
+
+# compute median intercept for each tamp
+# also transform to prob with log
+d_town$avg.est <- apply(post_m8$b, 2, mean)
+
+# display raw proportions of herbivory for each individual
+plot(d_town$avg, ylim = c(0, 1), pch = 16, xaxt = "n",
+     xlab = "individual", ylab = "herbivory proportion", col = rangi2)
+axis(1, at = c(0, 40, 80, 100), labels = c(0, 40, 80, 100))
+
+# overlay posterior means
+points(d_town$avg.est)
+
+# mark posterior mean probability across all individuals
+abline(h = mean(inv_logit(post_m8$a_bar)), lty = 2)
+```
+
+
+
+Sample the posterior distribution from `m4`. Still working on this code as well.
+
+```{r}
+post <- extract.samples(m8)
+d_town$herb.est <- logistic(apply(post$b, 2, mean))
+
+plot(d_town$herb.est, col = rangi2, pch = 1,
+     xlab = "Individual", ylab = "Herbivory %")
+points(d_town$herb.est, pch = 1)
+
+abline(h = mean(inv_logit(post$a_bar)), lty = 2)
+```
+
+## Sampling from posterior?
+
+
+```{r}
+# show first 100 populations of the posterior
+plot(NULL, xlim = c(-3, 4), ylim = c(0, 0.35),
+     xlab = "log-odds ?", ylab = "?")
+
+for(i in 1:100)
+   curve(dnorm(x, post$a_bar[i], post$sigma[i]), add = TRUE,
+         col = col.alpha("black", 0.2))
+
+# sample 8000 imaginary individuals from post distribution
+sim_ind <- rnorm(8000, post$a_bar, post$sigma)
+
+# transform to probability and visualize
+dens(inv_logit(sim_ind), lwd = 2, adj = 0.1)
+```
+
+
+
+Sample the posterior distribution from `m3`. Also working on this code still.
+
+post <- extract.samples(m3)
+
+```{r}
+# show first 100 populations of the posterior
+plot(NULL, xlim = c(-3, 4), ylim = c(0, 0.35),
+     xlab = "log-odds ?", ylab = "?")
+
+for(i in 1:100)
+   curve(dnorm(x, post$a_bar[i], post$sigma[i]), add = TRUE,
+         col = col.alpha("black", 0.2))
+
+# sample 8000 imaginary individuals from post distribution
+sim_ind <- rnorm(8000, post$a_bar, post$sigma)
+
+# transform to probability and visualize
+dens(inv_logit(sim_ind), lwd = 2, adj = 0.1)
+```
+
+
+I don't think there is shrinkage here?
+
+
+
+# Questionable code
+
+Here is my data:
+```{r}
+library(readr)
+d_town <- read_csv("d_town.csv")
+mean(d_town$herb)
+```
+
+The `herb` column is a measure of herbivore percent. The average herbivore damage is 0.92%, or close to 1%.
+
+# Priors
+
+I test some priors:
+
+```{r}
+set.seed(1)
+N <- 100
+
+a <- rlnorm(N, 1, 0.5) # global average
+b <- rlnorm(N, 0, 1.5) # species
+g <- rlnorm(N, 2, 5) # site
+
+plot(x = "species", y = "herb", data = d_town,
+     xlim = range(d_town$species),
+     ylim = c(-5, 100),
+     xlab = "species", ylab = "herb")
+for(i in 1:N)
+   curve(a[i] + b[i]*x + g[i],
+         from = 1, to = 2, add = T,
+         col = col.alpha("black", 0.2))
+
+```
+
+
+
+
+Slim list of variables. 
+```{r}
+d_town_slim <- list(
+   herb = d_town$herb,
+   species = as.integer(d_town$species),
+   site = d_town$site,
+   leaf = d_town$leaf
+)
+
+str(d_town_slim)
+```
+
+
+
+
+Here's a model:
+
+```{r}
+m2.2 <- ulam(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + d[leaf],
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dnorm(0, 1.5),
+      d[leaf] ~ dnorm(2, 5)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = TRUE
+)
+```
+
+
+I used these priors because they are weakly informative, but do the priors that I test earlier translate to the priors I used here? I am confused by the `logit` and `rlnorm` part - do they do the same thing?
+
+
+
+
+# Mixture model
+
+
+The way I am thinking about it is that there are 2 ways to get 0 herbivory (resulting in the zero inflation of the dataset): either an individual did not have any herbivore damage because there were no herbivores; or, a leaf did not get herbivorized but the other 2 leaves on the individual were damaged.
+
+First, I created a column `binom_herb` where 0 = no herbivory on any leaves and 1 = herbivory on at least one leaf. 
+
+```{r}
+d_town %>% 
+   spread(leaf, herb, sep = "") %>% 
+   mutate(binom_herb = ifelse((leaf1 + leaf2 + leaf3 == 0), 0, 1)) %>% 
+   pivot_longer(
+      cols = leaf1:leaf3,
+      names_to = "leaf",
+      values_to = "herb"
+   )
+```
+
+
+So, here is the code for the model
+
+```{r}
+m8.2 <- ulam(
+   alist(
+      herb ~ dzipois(p_zero, 100, lambda),
+      logit(lambda) <- a,
+      logit(p_zero) <- binom_herb[species],
+      
+      # priors
+      a ~ dnorm(1, 0.5),
+      binom_herb[species] ~ dnorm(0, 1.5)
+   ), data = d_town_slim, log_lik = TRUE
+)
+
+precis(m8.2, depth = 2)
+```
+
+So, the MAP estiamtes should be:
+
+```{r}
+inv_logit(1.46) 
+inv_logit(0.74)
+
+exp(0.99)
+```
+
+So, there is a 81% chance that species 1 will not herbivorized, and a lower value of 68% that species 2 will not herbivorized. If there are herbivores present (as indicated by herbivore damage on at least one of the three leaves), an individual faces about 2.69% herbivore damage.
+
+
+I really am not confident with this code, the priors I chose, or my interpretation of it at all. Also, if I were to add parameters (e.g., `site`) into the regression, which regression do I add it into?
+
+```{r}
+m8 <- ulam(
+   alist(
+      herb ~ dzipois(p_zero, lambda),
+      logit(lambda) <- a + b[species],
+      logit(p_zero) <- herb_zero,
+      
+      # priors
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dnorm(0, 1.5),
+      herb_zero ~ dnorm(2, 5)
+   ), data = d_town_slim, log_lik = TRUE
+)
+
+
+m8.1 <- ulam(
+   alist(
+      herb ~ dzipois(p_zero, 100, lambda),
+      logit(lambda) <- a + b[species],
+      logit(p_zero) <- binom_herb[species],
+      
+      # priors
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dnorm(0, 1.5),
+      binom_herb[species] ~ dnorm(2, 5)
+   ), data = d_town_slim, log_lik = TRUE, chains = 4, cores = 4,
+)
+
+m8.2 <- ulam(
+   alist(
+      herb ~ dzipois(p_zero, 100, lambda),
+      logit(lambda) <- a + b[species] + g[site] + d[leaf],
+      logit(p_zero) <- binom_herb[species],
+      
+      # priors
+      binom_herb[species] ~ dnorm(2, 5),
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dnorm(0, 1.5),
+      g[site] ~ dnorm(2, 5),
+      d[leaf] ~ dnorm(2, 5)
+   ), data = d_town_slim, log_lik = TRUE, chains = 4, cores = 4,
+)
+
+precis(m8, depth = 2)
+precis(m8.2, depth = 2)
+```
+
+
+```{r}
+inv_logit(1.72)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# NOTES
+
+Note on multilevel models
+
+- think abut the causal model first
+- begin with "empty" model with varying intercepts on relevant clusters
+- standardize predictors
+- use regularizing priors (simulate)
+- add in predictors and vary their slopes
+- can drop varying effects wwith tiny sigmas
+- consider two sorts of posterior prediction
+   - same units: what happened in these data?
+   - new units: what might we expect for new units?
+- your knowledge of domain trumps all
+
+
+
+
+
+Variance-covariance matrix
+```{r}
+vcov(m1)
+```
+
+Vector of variances for parameters
+```{r}
+diag(vcov(m1))
+
+```
+
+Correlation matrix
+```{r}
+cov2cor(vcov(m1))
+```
+
+
+
+
+
+
+
+- site as fixed effect (eventually multilevel model)
+- ignore town (not enough data)
+      * or only for one species
+- gLM with multivariable models
+- write out models with priors
+      - e.g., y ~ N(mu, sigma)
+- fit in quap or Stan
+- some description of how to diagnose model
+      - e.g., posterior predictions, etc.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

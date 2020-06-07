@@ -1,0 +1,331 @@
+---
+title: "Project"
+author: "Vicki M. Zhang"
+date: "January 29, 2020"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = F, message = F, warning = F,
+                      fig.width = 6, fig.height = 6)
+
+library(rethinking)
+library(dplyr)
+```
+
+```{r}
+t_dam <- read.csv("taraxacum_damage_2018.csv")
+```
+## Visualizing all data
+
+```{r}
+str(t_dam)
+```
+
+Description:
+
+- 180 rows of data
+- columns:
+    1. "plant" = plant ID (1 to 180)
+    2. "date" = date of data collection
+    3. "site" = site of data collection (1-5)
+    4. "town" = binary Y/N of whether plants were found in Churchill townsite
+    5. "species" = three *Taraxacum* species (*T. officinale* is invasive, *T. lacerum* and *T. ceratophorum* are native)
+    6. "leaf1", "leaf2", "leaf3" = measures of herbivory of 3 oldest leaves (i.e., largest, closest to ground)
+  
+
+Histogram
+```{r}
+t_dam %>% 
+  ggplot(aes(x = site, fill = species)) + 
+  geom_histogram() +
+  theme_classic() +
+  labs(title = "Distribution of Individuals across Sites",
+       x = "Sites",
+       y = "Number of Individuals")
+```
+
+## Species-Level Differences of Herbivory
+
+__Number of individuals per site__
+```{r}
+t_dam %>% 
+  group_by(site, town, species) %>% 
+  tally()
+```
+
+Notes:
+
+* sites 1-3 were in town, sites 4-5 were not in town
+* data for all three species were only collected in site 2
+    + only data for *T. ceratophorum* in site 2
+* sites 1 and 3 have data for only *T. lacerum* and *T. officinale*
+* sites 4 and 5 (i.e., out of town sites) have data only for *T. lacerum*
+
+__Number of individuals per species__
+```{r}
+t_dam %>% 
+  group_by(species) %>% 
+  tally()
+```
+
+N =
+
+* *T. ceratophorum* = 20
+* *T. lacerum* = 100
+* *T. officinale* = 60
+
+__Averaged damage of all plants in three species__
+```{r}
+t_dam %>% 
+  group_by(species) %>% 
+  summarize(leaf1 = mean(leaf1),
+            leaf2 = mean(leaf2),
+            leaf3 = mean(leaf3),
+            average = ((leaf1 + leaf2 + leaf3) / 3))
+```
+
+Table:
+
+* "leaf1", "leaf2" and "leaf3" columns are averaged damage percentages for each leaf
+* "average" is the average of columns "leaf1", "leaf2" and "leaf3"
+
+
+
+```{r}
+# Distribution of damage across species
+t_dam %>% 
+  mutate(avg_dam = ((leaf1 + leaf2 + leaf3) / 3)) %>% 
+  ggplot(aes(x = species, y = avg_dam)) +
+  geom_boxplot() +
+  labs(title = "Average damage across species",
+       x = "Species",
+       y = "Damage (averaged across 3 largest leaves)") +
+  theme_classic()
+```
+
+Notes:
+
+* *T. officinale* (the invasive species) has the greatest herbivory damage
+* no general pattern over which leaf is most damaged by herbivory
+    + dandelion leaves are in a floret near the base of the plant
+    + since all the leaves are close to each other, the lack of difference makes biological sense
+
+
+__Number of plants per species with no damage__
+```{r}
+t_dam %>%
+  group_by(species) %>% 
+  filter(leaf1 == "0" & leaf2 == "0" & leaf3 == "0") %>% 
+  tally()
+```
+
+Notes:
+
+* *T. ceratophorum* = 20
+    + 3 individuals with no damage
+* *T. lacerum* = 100
+    + 61 individuals with no damage
+* *T. officinale* = 60
+    + 24 individuals with no damage
+  
+__Averaged damage of all plants minus plants with no damage__
+```{r}
+t_dam %>% 
+  group_by(species) %>% 
+  filter(leaf1 != "0" & leaf2 != "0" & leaf3 != "0") %>%
+  summarize(leaf1 = mean(leaf1),
+            leaf2 = mean(leaf2),
+            leaf3 = mean(leaf3),
+            average = ((leaf1 + leaf2 + leaf3) / 3))  
+```
+
+
+Table:
+
+* "leaf1", "leaf2" and "leaf3" columns are averaged damage percentages for each leaf
+* "average" is the average of columns "leaf1", "leaf2" and "leaf3"
+* this only includes plants with damage (filtered out plants with no damage)
+
+
+
+```{r}
+# Distribution of damage across species minus plants with no damage
+t_dam %>%
+  filter(leaf1 != "0" & leaf2 != "0" & leaf3 != "0") %>%
+  mutate(avg_dam = ((leaf1 + leaf2 + leaf3) / 3)) %>% 
+  ggplot(aes(x = species, y = avg_dam)) +
+  geom_boxplot() +
+  labs(title = "Average damage across species (minus plants with no damage)",
+       x = "Species",
+       y = "Damage (averaged across 3 largest leaves)") +
+  theme_classic()
+```
+
+Notes:
+
+* *T. officinale* (the invasive species) again has the greatest herbivory damage
+* no general pattern over which leaf is most damaged by herbivory
+
+## Differences in Herbivory between sites
+
+__Average damage in and out of town__
+```{r}
+t_dam %>% 
+  group_by(town, species) %>% 
+  summarize(leaf1 = mean(leaf1),
+            leaf2 = mean(leaf2),
+            leaf3 = mean(leaf3),
+            average = ((leaf1 + leaf2 + leaf3) / 3)) 
+```
+
+```{r}
+# Distribution of average damage across species
+t_dam %>%
+  group_by(town, species) %>% 
+  mutate(avg_dam = ((leaf1 + leaf2 + leaf3) / 3)) %>% 
+  ggplot(aes(x = species, y = avg_dam)) + facet_wrap(~ town) +
+  geom_boxplot() +
+  labs(title = "Average damage in and out of town",
+       x = "Species",
+       y = "Damage (averaged across 3 largest leaves)") +
+  theme_classic()
+```
+
+Notes:
+
+* *T. lacerum* was the only species that had data both in and out of town
+* more damage in town
+
+
+
+__Average damage across species in town__ 
+```{r}
+t_dam %>% 
+  group_by(town, species) %>% 
+  filter(town == "Y") %>% 
+  summarize(leaf1 = mean(leaf1),
+            leaf2 = mean(leaf2),
+            leaf3 = mean(leaf3),
+            average = ((leaf1 + leaf2 + leaf3) / 3)) 
+```
+
+
+```{r}
+# Distribution of average damage across species in town
+t_dam %>%
+  group_by(town, species) %>% 
+  filter(town == "Y") %>% 
+  mutate(avg_dam = ((leaf1 + leaf2 + leaf3) / 3)) %>% 
+  ggplot(aes(x = species, y = avg_dam)) + facet_wrap(~ site) +
+  geom_boxplot() +
+  labs(title = "Average damage across species in town",
+       x = "Species",
+       y = "Damage (averaged across 3 largest leaves)") +
+  theme_classic() + theme(axis.text.x = element_text(angle = 90))
+```
+
+
+Notes:
+
+* *T. officinale* (invader) had  most herbivory damage
+* more damage in town
+
+## Effects of Date of Data Collection
+
+__Date of data collection across sites__
+```{r}
+t_dam %>% 
+   group_by(date, site) %>% 
+   tally()
+```
+
+Notes
+
+- most of the data (N = 133) collected on August 27th
+      * data collected from sites 1-4
+- some data collected Aug 28 (N = 46) and Aug 30 (N = 1)
+      * data collected on Aug 28th from sites 2, 3, 5
+      * one data point collected Aug 30th from site 3
+
+
+```{r}
+t_dam %>%
+   ggplot(aes(x = site, fill = date)) +
+   geom_bar() +
+   theme_classic() +
+   labs(title = "Number of data points collected per site across date",
+        x = "Site",
+        y = "N")
+```
+
+__Date of data collection across species__
+
+```{r}
+t_dam %>% 
+   group_by(date, species) %>% 
+   tally()
+```
+
+Notes
+
+- Aug 27th data (N = 133)
+      - only *T. lacerum* and *T. officinale* data collected
+- Aug 28th data (N = 46)
+      - data from all three species collected
+      - N (*T. ceratophorum*) = 20
+      - N (*T. officinale*, the invader) = 2
+      - N (*T. lacerum*) = 24
+- Aug 29th only has one data point for *T. lacerum*
+
+```{r}
+t_dam %>%
+   ggplot(aes(x = site, fill = species)) + facet_grid(~ date) +
+   geom_bar() +
+   theme_classic() +
+   labs(title = "Number of species data collected per site across date",
+        x = "Site",
+        y = "N")
+```
+
+## General thoughts
+
+1. The variables that are affecting the system here are:
+
+   - site (1-5)
+   - in or out of town (Y/N)
+   - species
+
+
+2. I want to predict herbivory damage
+
+   - not sure if I should use all three herbivory measures, choose one, or average the three measurements into a new measure
+   - also, not sure if species is a predictor, or if I should predict herbivory damage for all three species
+
+
+
+
+unsure variables
+
+- site affects herbivory damage
+- not really sure how site and town are connected
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

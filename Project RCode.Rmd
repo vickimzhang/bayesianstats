@@ -1,0 +1,1041 @@
+---
+title: "Herbivore damage in native and invasive *Taraxacum* species in Churchill"
+author:
+- "Vicki M. Zhang"
+- "EEB1455 Bayesian Statistics"
+date: "May 6th, 2020"
+output: 
+   html_document:
+      toc: true
+      toc_depth: 4
+      toc_float: true
+      df_print: paged
+      code_folding: show
+bibliography: Ref.bib
+---
+
+# Introduction
+
+Non-native species can invade habitats that they are not naturally found in. Exotic species invasion is common throughout temperate zones andis a major cause of native biodiversity loss and global change. However, northern environments are almost free of invasive plants. This may be due to a number of reasons, such as poorer plant performance and defense against herbivores in the unsuitable environmental conditions.
+
+Churchill, Manitoba (58.8°) represents a unique and suitable site for research into northern invasions in Canada. Located in the north-western corner of the Hudson Bay coast over a hundred non-native plants have been recorded in Churchill, reflecting its history as a grain port [@beckettAdventivePlantsChurchill1959]. Many of these plants have persisted for decades in the townsite and other human-disturbed areas, but almost none have spread from this reservoir into the boreal forests and tundra ecosystems. This region therefore offers the ideal opportunity to investigate factors, such as herbivore damage, that are preventing further invasion of non-native species into northern regions.Invaders may perform better in the inhabited, disturbed town than the undisturbed surroundings outside of town, resulting in the failure to spread into natural ecosystems. This may be due to better abiotic conditions in town, as well as a refuge from herbivores that frequent less-disturbed areas. In comparison, native species may be better adapted to native herbivory, resulting in their survival and persistance in less-disturbed sites.
+
+The aim of the present study is to use Bayesian inference to model herbivore damage of an invasive and a native dandelion in Churchill sites of varying degrees of disturbance. I predict that the site where an individual is found will affect its herbivore damage level, and that the invasive dandelion will have higher levels of herbivory, resulting in its unsuccessful invasion of the boreal and tundra ecosystems.
+
+
+```{r setup, include = F}
+knitr::opts_chunk$set(echo = F, message = F, warnings = F)
+
+library(rethinking)
+library(tidyverse)
+library(gridExtra)
+library(citr)
+library(dagitty)
+library(bayesplot)
+library(rstanarm)
+```
+
+
+
+# Methods
+
+
+The data set used in the present study was collected by Dr. Peter Kotanen who, in 2018, sampled vertebrate and insect herbivory of several *Taraxacum* species in Churchill, Manitoba. Herbivore damage was measured as a percent (Figure 1). These measurements were taken on the three largest leaves that have not yet senesced; however, it should be noted that *Taraxacum* is a perennial and the leaves grow in a rosette, so the leaves from which herbivory damage measures were taken may not be the oldest.
+
+![Figure 1](leaf_templates_2018.pdf){width=100% height=500}
+
+
+
+## Data Set
+
+The original dataset contained herbivore damage information of three species of Taraxacum: *T. officinale*, a widely-invasive dandelion, *T. lacerum*, the native and common dandelion, and *T. ceratophorum*, a native but more rare dandelion. Data was collected from five sites, three of which were within the Churchill townsite footprint, and the other two in the surrounding natural areas. The five sites ranged from disturbed (within Churchill) to undisturbed (further away from Churchill). Ranked in order from most to least disturbed, the sites are:
+
+- Site 1: Town Complex (Hospital and school)
+- Site 2: Town Square
+- Site 3: Manitoba Port sign (N edge of town)
+- Site 4: Southern RR line on goose Creek Road
+- Site 5: Goose Creek Pumping Station 
+
+```{r}
+d <- read.csv("taraxacum_damage_2018.csv")
+str(d)
+```
+
+
+Herbivory data was not collected equally between species and between sites. *T. lacerum* data (N = 100) was collected from all five sites, while *T. officinale* (N = 60) was only found within Churchill, and thus data was only collected from sites 1, 2, and 3. *T. ceratophorum* data (N = 20) was only collected in site 2 within town. In order to directly compare native and invader species, *T. ceratophorum* data was removed.
+
+
+```{r}
+# currently, sites 1 and 3 are switched (so it is not ordered); I am switching it here and then commenting it out
+d <- d %>%
+   mutate(site = ifelse(site == 1, 0, site)) %>%
+   mutate(site = ifelse(site == 3, 1, site)) %>%
+   mutate(site = ifelse(site == 0, 3, site))
+
+d %>% 
+   group_by(site, species) %>% 
+   tally()
+```
+
+
+My model will aim to predict herbivore damage for *T. officinale* and *T. lacerum* in the five sites.
+
+
+### Clean Data
+
+The data set was not in tidy format and one unused species (*T. ceratophorum*) needed to removed. First, I removed *T. ceratophorum* observations I added an `ind` column to index each individual plant. In total, there were 480 leaves measured over 160 individuals. Then, I added a column `herb_bin` that is a binary measure of herbivory, where `1` indicates that the entire plant (at least one out of the three leaves) have been damaged, and `0` indicates that the entire plant (all three leaves) are undamaged by herbivores. I rotated my data from wide to long format. I added a `leaf` column,. where `1`, `2`, and `3` indicated the respective replicates of herbivory damage measures on specific leaves of each individual. From this clean data, I created a new data frame `d_town`. I re-indexed `species` so that it is numeric, where `1` indicates *T. lacerum*, and `2` indicates *T. officinale*. Since herbivory was measured as a percent (that is, a proportion out of 100), I ensured that the `herb` column was an integer. I also ensured that the `leaf` column was an integer (after I restructured the data to long format). 
+
+```{r}
+# data frame without minus T. ceratophorum
+d <- d %>%
+   filter(species != "T_ceratophorum")
+
+# add `ind`
+d$ind <- 1:nrow(d)
+
+# add herb_bin
+d <- d %>% 
+   mutate(herb_bin = ifelse((leaf1 + leaf2 + leaf3 == 0), 0, 1))
+
+# rotate
+d <- d %>%
+   pivot_longer(
+      cols = leaf1:leaf3,
+      names_to = "leaf",
+      values_to = "herb")
+
+# add leaf
+d$leaf <- ifelse(d$leaf == "leaf1", 1,
+                      ifelse(d$leaf == "leaf2", 2, 3))
+
+# new data frame
+d_town <- d %>%
+   select(ind, species, site, leaf, herb, herb_bin)
+
+# re-index species
+d_town$species <- ifelse(d_town$species == "T_officinale", 2, 1)
+d_town$species <- as.integer(d_town$species)
+
+# herbivory as integer
+d_town$herb <- as.integer(d_town$herb)
+
+# leaf as integer
+d_town$leaf <- as.integer(d_town$leaf)
+
+
+# summary
+precis(d_town)
+
+# save data frame
+write.csv(x = d_town, file = "d_town.csv")
+```
+
+
+## Data Description
+
+The measures of herbivory were low. In particular, about 76% of all leaves measured had no herbivory damage recorded. However, it is important to note that this does not mean 76% of all individuals had no herbivore damage, as it is likely that one leaf had no recorded damage, while the other two leaves were damaged. In actuality, out of the 160 individuals measured, 85 individuals (53%) recorded no herbivore damage at all.
+
+```{r}
+dens(d_town$herb)
+
+# function `prop_zero` calculates number of zeroes in data & in posterior predictions
+prop_zero <- function(x)
+   mean(x == 0)
+
+prop_zero(d_town$herb) # proportion of leaves with no damage
+
+# proportion of individuals with no damage
+d_town <- d_town %>% 
+   group_by(ind) %>% 
+   mutate(avg_herb = mean(herb))
+prop_zero(d_town$avg_herb)
+```
+
+
+From an initial investigation of the data, it appears that there may be a relationship between species and herbivory. In the figure below, *T. lacerum* seems to have less herbivory damage than *T. officinale*. However, there is one *T. lacerum* outlier at site 1.
+
+```{r}
+labels <- c("1" = "T. lacerum", "2" = "T. officinale")
+
+d_town %>% 
+   ggplot(aes(x = site, y = herb, colour = species)) +
+   facet_grid(species ~ .,
+              labeller = labeller(species = labels)) +
+   geom_point(size = 2) + 
+   labs(y = "Herbivory", x = "Site") +
+   theme_classic() +
+   theme(strip.text.y = element_text(face = "italic"),
+         legend.position = "none")
+```
+
+The following matrix summarizes average herbivory damage. The two species are in rows (1 = *T. lacerum*, 2 = *T. officinale*), and the three sites are indicated by the columns (from most to least disturbed). The cells contain the average herbivore damage in percentages. It appears that the invasive dandelion has higher levels of herbivore damage on average, but the relationship between herbivory and site is less clear. 
+
+```{r}
+herb_summary <- by(d_town$herb, list(d_town$species, d_town$site), mean)
+herb_summary[,]
+```
+
+Furthermore, it appears that leaf 3 may have higher levels of herbivory than leaf 2, and leaf 1 has the lowest herbivore damage, as illustrated in the histogram below. This may be due to a random process, a characteristic of data collection, or an actual pattern in nature where herbivores aim for the largest plant material. There is also an outlier on one of the second leaves: a recorded 50% of the leaf was damaged.
+
+```{r}
+d_town %>% 
+   ggplot(aes(herb, fill = leaf)) + 
+   geom_histogram() +
+   facet_grid(leaf ~ .) +
+   labs(x = "Herbivory", y = "Count") +
+   theme_classic() +
+   theme(legend.position = "none")
+```
+
+The histogram below simulated herbivory damage of individual leaves, given that about 47% of plants are damaged. The factor `herb_plant` indicates whether the entire plant has been damaged by herbivores, where `0` indicates that the plant is totally undamaged, while `1` indicates that the plant has been damaged. There is a large number of leaves with no simulated herbivory, but this includes cases where the plant itself has no damage at all *and* instances where the plant has been damaged, but the individual leaf in question has not been damaged.
+
+```{r}
+mean(d_town$avg_herb)
+prop_zero(d_town$herb)
+prop_zero(d_town$avg_herb)
+
+prob_herb <- 0.46875 # 47% of plants are herbivore-damaged
+avg_herb <- 0.01 # average of 1% damage per plant
+
+# sample 300 individuals
+N <- 300
+
+# simulate herbivory as a factor
+set.seed(300)
+herb_plant <- rbinom(N, 1, prob_herb)
+
+# simulate herbivory damage per plant
+herb <- (herb_plant) * rbinom(N, 100, avg_herb)
+
+d <- data.frame(herb_plant = herb_plant, herb = herb)
+
+d %>% 
+   ggplot(aes(x = herb, fill = factor(herb_plant))) +
+   geom_bar() +
+   labs(x = "Leaf herbivory damage", y = "Count") +
+   theme_classic()
+```
+
+## DAG
+
+The model will use the variables of `species`, `site` and `leaf`to predict total herbivory `herb` of *Taraxacum* species in town. Below is the DAG for this model. 
+
+```{r}
+d_dag <- dagitty("dag {
+            site -> herb 
+            species -> leaf 
+            site -> species 
+            leaf -> herb
+            } ")
+
+coordinates(d_dag) <- list(x = c(site = 0, herb = 0.5, species = 2,
+                                  leaf = 2),
+                            y = c(site = 0, herb = 0.25, species = 0,
+                                  leaf = 1))
+drawdag(d_dag)
+```
+
+
+The site at which an individual was found and the species of the individual will both affect the percentage of herbivore damage. The sites sampled were within a range of disturbance; for example, site 1 was in the town complex (the busiest part of town in close proximity to a school and a hospital), while site 5 was past the railway link and has a history of minimal disturbance. Sites that are less disturbed is expected to have higher levels of herbivory. The species of an individual will also affect herbivory but through a backdoor path of leaf. Two dandelion species were sampled, but there is a confound created by the `leaf` variable since not all leaf material are the same, between and within species. Not all individuals sampled may have been the same size or age, and the leaf morphology differs between the two species. Although it was hypothesized that the invasive species will face greater levels of herbivory, random variation and outliers in the data may result in incorrect prediction. Thus, the replicated measures of herbivory on three leaves per individual may be an important inclusion in the models. 
+
+I tested several fixed and mixed effects models with the following variables: `species` (*T. lacerum* or *T. officinale*); `herb` (continuous but low percentages); `site` (1 to 5); and `leaf` (1 to 3). Species was tested as both a fixed and hierarchical variable, and site was also tested a fixed or hierarchical variable. Some models removed the site variable altogether, and some models included leaf as a blocked variable. I then tested out several mixture models to try to encapsulate the high proportions of zeroes. I used a `dbinom` regression, since herbivory is binomial (either the leaf or the plant is damaged by herbivory, or not), and herbivory is  measured as an integer out of 100 (i.e., it is a percent).
+
+All of the models were run using `ulam` in the `rethinking` package, and then model diagnostics and posterior predictive checks were were completed using `rethinking` and `bayesplot`. The slim list of variables `d_town_slim` was used in the models are summarized below. There were 480 leaf herbivory measures on 160 individuals. These individuals comprise 2 species found in 5 sites.
+
+```{r}
+d_town_slim <- list(
+   herb = d_town$herb,
+   species = as.integer(d_town$species),
+   site = d_town$site,
+   leaf = d_town$leaf,
+   herb_bin = d_town$herb_bin
+)
+
+str(d_town_slim)
+```
+
+
+## Testing Priors
+
+Apart from doing prior predictive simulations below, I first wanted to choose some priors to see how they would look on a log scale. I choose weakly-informative priors, and simulate 100 herbivory observations to see how these observations would be affected by species, the main treatment parameter. The figure below illustrates the priors used: $\alpha \sim log normal(1, 0.5)$ for the global herbivory parameter and $\beta \sim lognormal(0, 1.5)$ for the effect of species. Most of the simulated herbivore damage is centered around 0%, and there is a slight uptick of herbivory damage simulated in species 2, the invasive dandelion, which reflects the raw data.
+```{r}
+set.seed(1)
+N <- 100
+
+a <- rlnorm(N, 1, 0.5) # global average
+b <- rlnorm(N, 0, 1.5) # species
+g <- rlnorm(N, 2, 5) # site
+
+plot(x = "species", y = "herb", data = d_town,
+     xlim = range(d_town$species),
+     ylim = c(-5, 100),
+     xlab = "species", ylab = "herb")
+for(i in 1:N)
+   curve(a[i] + b[i]*x + g[i],
+         from = 1, to = 2, add = T,
+         col = col.alpha("black", 0.2))
+```
+
+# Results of Models
+
+
+## Models 1 & 2: Fixed effects
+
+
+Theese first models had the variables `species`, `site` and `leaf` as fixed effects. I test out several models that include various combinations of these variables, and compare their predictive abilities. The most complex model was:
+
+$$herb_i \sim Binomial(\mu_i, \sigma)$$
+
+$$logit(\mu_i) = \alpha + \beta_{species[j]} + \gamma_{site[i]} + \delta_{leaf[k]}$$
+$$\alpha \sim Normal(1, 0.5)$$
+$$\beta_j \sim Normal(0, 1.5)$$
+$$\gamma_i \sim Uniform(2, 5)$$
+$$\delta_k \sim Uniform(2, 5)$$
+
+
+
+First, there are several simple intercept-only linear model estimating two intercepts (one per `species`) using the $\alpha$ parameter. The models are:
+
+- `m1`: a single $\alpha$ parameter indexing the two species
+- `m1.1`: a single $\alpha$ parameter (similar to `m1`), but using a log-normal prior
+- `m1.2`: an $\alpha$ parameter that estimates a global mean and a $\beta$ prior for species effects
+
+```{r}
+m1 <- map2stan(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- a[species], # single parameter
+      a[species] ~ dnorm(1, 0.5)
+   ), data = d_town_slim, log_lik = T
+)
+
+m1.1 <- map2stan(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species],
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dlnorm(0, 1.5) # log-normal
+   ), data = d_town_slim, log_lik = T
+)
+
+m1.2 <- map2stan(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species],
+      a ~ dnorm(1, 0.5), # global mean
+      b[species] ~ dnorm(0, 1.5)
+   ), data = d_town_slim, log_lik = T
+)
+
+compare(m1, m1.1, m1.2, func = PSIS)
+```
+
+From the `compare` output, it is clear that using a normal distribution for `species` has a better PSIS score than using a log-normal distribution; this is what the prior simulations suggested as well. Additionally, it appears that models with and without a central $\alpha$ parameter are similar, so adding a parameter to estimate average herbivory across all individual plants does not add inference power.
+
+A second group of models had the parameters `site`, `leaf` or both. I then compare these models with the previous model `m1` and `m1.2`
+
+- `m2`: both `site` and `leaf` were variables with respective priors
+- `m2.1`: only `site` was a variable
+- `m2.2`: only `leaf` was a variable
+- `m2.3`: both `site` and `leaf` were variables with respective priors (similar to `m2`), but no $\alpha$
+
+
+```{r}
+# model with `site` and `leaf`
+m2 <- ulam(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + g[site] + d[leaf],
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dnorm(0, 1.5),
+      g[site] ~ dnorm(2, 5),
+      d[leaf] ~ dnorm(2, 5)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = TRUE
+)
+
+# model with `site`
+m2.1 <- ulam(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + g[site],
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dnorm(0, 1.5),
+      g[site] ~ dnorm(2, 5) 
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = TRUE
+)
+
+# model with `leaf`
+m2.2 <- ulam(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + d[leaf],
+      a ~ dnorm(1, 0.5),
+      b[species] ~ dnorm(0, 1.5),
+      d[leaf] ~ dnorm(2, 5)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = TRUE
+)
+
+# model with `site` and `leaf` but no global a
+m2.3 <- ulam(
+   alist(
+      herb ~ dbinom(100, p),
+      logit(p) <- b[species] + g[site] + d[leaf],
+      b[species] ~ dnorm(0, 1.5),
+      g[site] ~ dnorm(2, 5),
+      d[leaf] ~ dnorm(2, 5)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = TRUE
+)
+
+
+compare(m1, m1.2, m2, m2.1, m2.2, m2.3)
+```
+
+The best model as indicated by WAIC scores has `leaf` as a parameter, and excludes `site`. WAIC scores are fairly close, so that the next-best model has both `leaf` and `site` parameters. Notably, if a model excludes `leaf` and only has `site` as a parameter, WAIC scores are much higher. The following `precis` plots show the estimates for `m2.2`, `m2`, and `m2.3` respectively. Notably, the $\beta$, $\delta$ and $\gamma$ estimates are similar to across models.
+
+```{r}
+par(mfrow = c(1, 3))
+precis_plot(precis(m2.2, depth = 2))
+precis_plot(precis(m2, depth = 2))
+precis_plot(precis(m2.3, depth = 2))
+```
+
+I sampled from the `m2.2` prior, and then converted the parameter to the outcome scale for prior predictive simulations. Since a weakly-informative and non-flat prior was used, the produced outcome probability space is reasonably flat and does have wildly high values of herbivore damage for either species. The absolute prior differences between species is also concentrated on lower values; the average prior difference is about 28%. This is a weakly informative prior, and extremely large differences are less plausible.
+
+```{r}
+set.seed(1)
+prior_m2 <- extract.prior(m2.2, n = 1e4)
+
+par(mfrow = c(1, 2))
+
+# prior probability space
+p_m2 <- inv_logit(prior_m2$b)
+dens(p_m2, adj = 0.1, xlab = "Prior probability space (m2)")
+
+# prior probability of herbivory for each species
+p_m2 <- sapply(1:2, function(j)
+   inv_logit(prior_m2$a + prior_m2$b[, j]))
+
+# plot absolute prior differences between species
+dens(abs(p_m2[, 1] - p_m2[, 2]), adj = 0.1, xlab = "Prior differences between species")
+
+# calculate average prior difference
+mean(abs(p_m2[, 1] - p_m2[, 2]))
+```
+
+
+I extracted the posterior from `m2` (full model with all parameters) and `m2.2` (no `site` variable) to look at the effects of different parameters on the relative logit scale. Both models predicted that the invader, *T. officinale* encounters greater herbivore damage. However, without the `site` parameter, as in `m2.2`, the $\delta$ estimates for `leaf` are narrower. This suggests that regardless of site, the leaf number has an effect on herbivory, which was unexpected.
+
+```{r}
+# leaf and site
+m2_fit <- m2@stanfit
+posterior_m2 <- as.matrix(m2_fit)
+
+# only leaf
+m2.2_fit <- m2.2@stanfit
+posterior_m2.2 <- as.matrix(m2.2_fit)
+
+# plot 
+params_m2 <- c(names(m2_fit)[grep("a", names(m2_fit))],
+               names(m2_fit)[grep("b", names(m2_fit))],
+               names(m2_fit)[grep("d", names(m2_fit))])
+p2 <- mcmc_areas(
+  posterior_m2, 
+  pars = params_m2,
+  prob = 0.8,
+  prob_outer = 0.999,
+  point_est = "mean"
+) + ggtitle("m2")
+
+params_m2.2 <- c(names(m2.2_fit)[grep("a", names(m2.2_fit))],
+                 names(m2.2_fit)[grep("b", names(m2.2_fit))],
+                 names(m2.2_fit)[grep("d", names(m2.2_fit))])
+p2.2 <- mcmc_areas(
+  posterior_m2.2, 
+  pars = params_m2.2,
+  prob = 0.8,
+  prob_outer = 0.999,
+  point_est = "mean"
+) + ggtitle("m2.2")
+
+grid.arrange(p2, p2.2, ncol = 1)
+```
+
+I used trace plots and trace rank plots to check the Markov chain for `m2.2`. From the trace plots, it appears that the chain is healty as it has stationarity, displays good mixing, and converges within a region of high probability.
+
+```{r}
+traceplot(m2.2)
+trankplot(m2.2, n_cols = 3)
+```
+
+I conducted posterior predictive checks using `bayesplot` to evaluate the predictive abilities of `m2` and `m2.2`. I adjusted the x-axis in order to rescale the predictions back to the absolute outcome scale. The WAIC scores evaluated `m2` as a worse model, but it appears to capture the data better, especially the high number of "0" values. The model `m2.2` captured 48% of "0" herbivory measures, while `m2` captured 50% (recall that about 53% of individuals had no herbivore damage at all). There is a potential danger of overfitting by model `m2`.
+
+```{r}
+# generate posterior predictions with sim
+y <- d_town_slim$herb
+y_avg <- d_town$avg_herb
+y_rep2 <- sim(m2, n = 500)
+y_rep2.2 <- sim(m2.2, n = 500)
+
+# proportions of 0 in data, m2 and m2.2
+prop_zero_m2 <- ppc_stat(y_avg, y_rep2, stat = "prop_zero", binwidth = 0.005) + ggtitle("Proportion of 0s predicted by m2")
+prop_zero_m2.2 <- ppc_stat(y_avg, y_rep2.2, stat = "prop_zero", binwidth = 0.005) + ggtitle("Proportion of 0s predicted by m2.2")
+grid.arrange(prop_zero_m2, prop_zero_m2.2, nrow = 2)
+
+# plot
+ppc_dens_overlay(y, y_rep2[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m2 posterior predictions")
+```
+
+
+
+## Multilevel Models with varying intercepts
+
+
+The most complicated model has the variables `species`, `site`, `leaf` all as multilevel parameters. The following models test these parameters by varying the multilevel effects. The global parameter $\alpha$ remains the same. In mathematical form, the most complicated model is:
+
+$$herb \sim Binomial(n, p_i)$$
+$$logit(p_i) = \alpha + \beta_{species[j]} + \gamma_{site[i]} + \delta_{species[k]}  $$
+$$\alpha \sim Normal(\overline \alpha, \sigma_{\alpha})$$
+$$\overline \alpha \sim Normal(1, 0.5)$$
+$$\sigma_{\alpha} \sim Exponential(1)$$
+$$\beta_j \sim Normal(0, \sigma_{\beta})$$
+$$\gamma_i \sim Normal(0, \sigma_{\gamma})$$
+$$\delta_k \sim Normal(0, \sigma_{\delta})$$
+$$\sigma_{\beta} \sim Exponential(1)$$
+$$\sigma_{\gamma} \sim Exponential(1)$$
+$$\sigma_{\delta} \sim Exponential(1)$$
+
+
+## Model 3-5: Most basic hierarchical models
+
+These next models have the variable `species` as a parameter only, and ignores all other variables as blocked effects.
+
+```{r}
+set.seed(9)
+
+# adaptive alpha parameter
+m3 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species],
+      b[species] ~ dnorm(0, 1.5),
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+
+# `species` as a hierarchical effect, but ignores all other parameters as a block effect
+# adaptive alpha and beta parameter
+m4 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species],
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      b[species] ~ dnorm(0, sigma_b),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1),
+      sigma_b ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+
+# adaptive beta parameter for species effects but no global alpha parameter
+m5 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- b[species],
+
+      # adaptive priors
+      b[species] ~ dnorm(b_bar, sigma_b),
+      
+      # hyper-priors
+      b_bar ~ dnorm(1, 0.5),
+      sigma_b ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+
+compare(m3, m4, m5, m2, m2.2)
+```
+
+According WAIC scores, these hierarchical models do not perform as well as the previous fixed effects models. However, the best hierarchical model is `m4`, which has a glboal $\alpha$ parameter and a $\beta$ parameter that indexes `species`. Before adding in other variables, I simulated some prior predictions to see if the priors used are weakly informative.
+
+Sampling from the `m4` prior, and then converting the parameter to the outcome scale, the visualization shows that most of the probabilities lie near the centre. This is a highly plausible outcome, and indicates that the priors produce plausible predictions. The absolute prior difference between the two species is concentrated on low differences, and extremely large differences are not plausible with these weakly informative priors. The average prior difference is about 28%.
+
+```{r}
+set.seed(1)
+prior_m4 <- extract.prior(m4, n = 1e4)
+
+par(mfrow = c(1, 2))
+
+# plot prior probability space
+p_m4 <- inv_logit(prior_m4$b)
+dens(p_m4, adj = 0.1, xlab = "Prior probability space (m4)")
+
+# compute prior probability of `herb` for each `species`:
+p_m4 <- sapply(1:2, function(k)
+   inv_logit(prior_m2$a + prior_m2$b[, k]))
+
+# plot absolute prior differences between species
+dens(abs(p_m4[, 1] - p_m4[, 2]), adj = 0.1, xlab = "Prior differences between species")
+
+# calculate average prior difference
+mean(abs(p_m4[, 1] - p_m4[, 2]))
+```
+
+I extracted the posterior from `m4` to look at the effects of different parameters on the relative logit scale. The model predicted a small effect of species, in which the invader *T. officinale* encounters greater herbivore damage. 
+
+```{r}
+m4_fit <- m4@stanfit
+posterior_m4 <- as.matrix(m4_fit)
+
+# plot 
+params <- c(names(m4_fit)[grep("a", names(m4_fit))],
+            names(m4_fit)[grep("b", names(m4_fit))])
+
+mcmc_areas(
+  posterior_m4, 
+  pars = params,
+  prob = 0.8,
+  prob_outer = 0.999,
+  point_est = "mean"
+)
+```
+
+The trace and trace rank plots used to check the Markov chain for `m4` indicate that the chain has stationarity, and displays good mixing and convergence. There are occasions where the Markov chain spike to extreme values, but these spikes are not uncommon enough to result in bad estimates.
+
+```{r}
+traceplot(m4)
+trankplot(m4, n_cols = 3)
+```
+
+Again, using `bayesplot` to do posterior predictive checks of `m4` (after adjusting the x-axis to the absolute outcome scale). The model `m4` does not simulate an accurate proportion of zeroes, in comparison to the previous models `m2` and `m2.2`. It only predicts about 43% of zeroes, namely underpredicting the cases where invasive species, indexed as `2`, have zero recorded herbivory.
+
+```{r}
+# generate posterior predictions with sim
+y <- d_town_slim$herb
+y_avg <- d_town$avg_herb
+y_rep4 <- sim(m4, n = 500)
+
+# plot
+ppc_dens_overlay(y, y_rep4[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m4 posterior predictions")
+
+# proportions of 0 
+ppc_stat_grouped(y_avg, y_rep4, stat = "prop_zero", binwidth = 0.005, group = d_town_slim$species) +
+   ggtitle("Proportion of 0s predicted by m4")
+```
+
+
+
+## Models 6 & 7: Adding blocked effects
+
+These next models that I tested had the addition of `site`, `leaf` or both `site` and `leaf` as a blocked effect. One group of models kept `species` as a blocked effect, as in `m4`, but another group of models had `species` as a fixed effect. I then compare all of these models.
+
+- `m6`: `species`, `site` and `leaf` as blocked effects
+- `m6.1`: `species` and `site` as a blocked effect
+- `m6.2`: `species` and `leaf` as a blocked effect
+- `m7`: both `site` and `leaf` as blocked effects
+- `m7.1`: only `site` as a blocked effect
+- `m7.2`: only `leaf` as a blocked effect
+
+```{r}
+# site and leaf
+m6 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + g[site] + d[leaf],
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      b[species] ~ dnorm(0, sigma_b),
+      g[site] ~ dnorm(0, sigma_g),
+      d[leaf] ~ dnorm(0, sigma_d),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1),
+      sigma_b ~ dexp(1),
+      sigma_g ~ dexp(1),
+      sigma_d ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+
+# site
+m6.1 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + g[site],
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      b[species] ~ dnorm(0, sigma_b),
+      g[site] ~ dnorm(0, sigma_g),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1),
+      sigma_b ~ dexp(1),
+      sigma_g ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+
+# leaf
+m6.2 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + d[leaf],
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      b[species] ~ dnorm(0, sigma_b),
+      d[leaf] ~ dnorm(0, sigma_d),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1),
+      sigma_b ~ dexp(1),
+      sigma_d ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+```
+
+```{r}
+# site and leaf
+m7 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + g[site] + d[leaf],
+      b[species] ~ dnorm(0, 1.5),
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      g[site] ~ dnorm(0, sigma_g),
+      d[leaf] ~ dnorm(0, sigma_d),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1),
+      sigma_g ~ dexp(1),
+      sigma_d ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+
+# site
+m7.1 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + g[site],
+      b[species] ~ dnorm(0, 1.5),
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      g[site] ~ dnorm(0, sigma_g),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1),
+      sigma_g ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+
+# leaf
+m7.2 <- ulam(
+   alist(
+      # regression
+      herb ~ dbinom(100, p),
+      logit(p) <- a + b[species] + d[leaf],
+      b[species] ~ dnorm(0, 1.5),
+
+      # adaptive priors
+      a ~ dnorm(a_bar, sigma_a),
+      d[leaf] ~ dnorm(0, sigma_d),
+      
+      # hyper-priors
+      a_bar ~ dnorm(1, 0.5),
+      sigma_a ~ dexp(1),
+      sigma_d ~ dexp(1)
+   ), data = d_town_slim, chains = 4, cores = 4,
+   log_lik = T
+)
+```
+
+
+```{r}
+compare(m2, m2.2, m4, m5, m6, m6.1, m6.2, m7, m7.1, m7.2)
+```
+
+The same pattern holds in that the models with the lowest WAIC scores are those that remove `site` as an effect, and instead have `leaf` as an effect. In comparison, models that do not have `leaf` as a blocked effect have the lowest WAIC scores, as in `m6.1` and `m7.1`. There is no large difference of having `species` as a fixed or hierarchical effect, as models `m7.2` and `m6.2` have similar WAIC scores. In order to evaluate differences in predictive performance between models with different variables removed, I compare models `m7`, `m7.1` and `m7.2` below.
+
+I sampled from the `m7` prior, and converted the parameter to the outcome scale. The figure shows that most of the probabilities in a wide range, but extremely large and small values are less common. The absolute prior difference between the two species is concentrated on low differences, and extremely large differences are not plausible with these weakly informative priors. This is a  plausible outcome, and the average prior difference is about 25%.
+
+```{r}
+set.seed(1)
+prior_m7 <- extract.prior(m7, n = 1e4)
+
+par(mfrow = c(1, 2))
+
+# plot prior probability space
+p_m7 <- inv_logit(prior_m7$b)
+dens(p_m7, adj = 0.1, xlab = "Prior probability space (m7.1)")
+
+# compute prior probability of `herb` for each `species`:
+p_m7 <- sapply(1:2, function(k)
+   inv_logit(prior_m7$a + prior_m7$b[, k]))
+
+# plot absolute prior differences between species
+dens(abs(p_m7[, 1] - p_m7[, 2]), adj = 0.1, xlab = "Prior differences between species")
+
+# calculate average prior difference
+mean(abs(p_m7[, 1] - p_m7[, 2]))
+```
+
+
+The precis plot compares the parameter estimates of `m7`, `m7.1` and `m7.2` respectively. The models predicted a small effect of species, in which the invader *T. officinale* encounters greater herbivore damage. The estimated variation for `sigma_d` is larger than the estimated variation for `sigma_g`, which indicates that the model is confident that herbivory varies more among leaves than it does among sites; that is, there the sites are more similar to each other. Thus, adding `site` as a variable does not add overfitting risk, but removing the `leaf` variable risks underfitting the model. Specifically looking at `m7`, the model that includes `site` and `leaf`, the differences in the variation between `sigma_d` and `sigma_g` are more apparent.
+
+```{r}
+par(mfrow = c(1, 3))
+precis_plot(precis(m7, depth = 2))
+precis_plot(precis(m7.1, depth = 2))
+precis_plot(precis(m7.2, depth = 2))
+
+
+# specifically looking at m7
+m7_fit <- m7@stanfit
+posterior_m7 <- as.matrix(m7_fit)
+
+# plot m7
+params <- c(names(m7_fit)[grep("a", names(m7_fit))],
+            names(m7_fit)[grep("b", names(m7_fit))])
+
+mcmc_areas(
+  posterior_m7, 
+  pars = params,
+  prob = 0.8,
+  prob_outer = 0.999,
+  point_est = "mean"
+) + ggtitle("m7 parameter estimates")
+
+```
+
+Trace plots are used to check the Markov chain for `m7`, `m7.1` and `m7.2`, in that order. The chains have stationarity, and display good mixing and convergence. There are occasions where the Markov chain spike to extreme values, but these spikes are not uncommon enough to result in bad estimates. Relatively, `m7.1` displays poorer convergence and mixing, and this model also has the highest WAIC score.
+
+```{r}
+traceplot(m7)
+traceplot(m7.1)
+traceplot(m7.2)
+```
+
+Firstly, posterior predictive checks of `m7.1` suggest that this model has the lowest predictive power, in comparison to `m7` and `m7.2`. It does not capture the raw data as well as the other two models, and underpredicts occasions where herbivore damage is zero of both native and invasive species. Posterior predictive checks of `m7` simulates about 49% zeroes, while `m7.2` simulates about 48%, both of which are similar to models `m2` and `m2.2`. The posterior predictions of both models appear to be predicting the data satisfactorily. However, the figures visualizing the proportion of zeroes predicted by the models indicate that the models are not predicting herbivory on the invasive *T. officinale* as well, relative to the predictions of herbivory on the native *T. officinale*.  The proportions of herbivore measures predicted that are zero are underpredicted, similar to previous models. 
+
+```{r}
+# generate posterior predictions with sim
+y_rep7 <- sim(m7, n = 500)
+y_rep7.1 <- sim(m7.1, n = 500)
+y_rep7.2 <- sim(m7.2, n = 500)
+
+# proportion zero
+prop_zero(y_rep7)
+prop_zero(y_rep7.1)
+prop_zero(y_rep7.2)
+
+# plot m7
+ppc_dens_overlay(y, y_rep7[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m7 posterior predictions")
+ppc_stat_grouped(y_avg, y_rep7, stat = "prop_zero", binwidth = 0.005, group = d_town_slim$species) +
+   ggtitle("Proportion of 0s predicted by m7")
+
+# plot m7.1
+ppc_dens_overlay(y, y_rep7.1[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m7.1 posterior predictions")
+ppc_stat_grouped(y_avg, y_rep7.1, stat = "prop_zero", binwidth = 0.005, group = d_town_slim$species) +
+   ggtitle("Proportion of 0s predicted by m7.1")
+
+# plot m7.2
+ppc_dens_overlay(y, y_rep7.2[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m7.2 posterior predictions")
+ppc_stat_grouped(y_avg, y_rep7.2, stat = "prop_zero", binwidth = 0.005, group = d_town_slim$species) +
+   ggtitle("Proportion of 0s predicted by m7.2")
+```
+
+
+I also compare models `m6`, `m6.1`, and `m6.2`, which have `species` as a blocked effect. I first checked trace plots to ensure that the chains have stationarity, and display good mixing and convergence. Notably, `m6.1` (the second group of trace plots) is not a healthy chain as it displays questionable mixing and bad convergence, resulting in spikes of certain chains that can result in bad estimates; this was also the model with the highest WAIC. The other two models, `m6` and `m6.2` display properties of healthy chains.
+
+```{r}
+traceplot(m6)
+traceplot(m6.1)
+traceplot(m6.2)
+```
+
+
+The precis plot compares the parameter estimates of `m6` and `m6.2` respectively. The estimated variation for `sigma_b` is slightly larger than the estimated variation for `sigma_g` and `sigma_d`, which indicates that the model is confident that herbivory varies more among species than it does among the other two variables of site or leaf. ; that is, there the sites are more similar to each other. Thus, adding `site` as a variable does not add overfitting risk, but removing the `leaf` variable risks underfitting the model. Specifically looking at `m6`, the model that includes `species`, `site` and `leaf` as blocked variables, the differences in the variation between `sigma_b`, `sigma_d` and `sigma_g` are easier to visualize. The mean point estimates are similar, but the longer, right-skewed uncertainty intervals indicate that there is a slightly more positive effect of `sigma_b` on herbivory estimates.
+
+```{r}
+par(mfrow = c(1, 2))
+precis_plot(precis(m6, depth = 2))
+precis_plot(precis(m6.2, depth = 2))
+
+# specifically looking at m6
+m6_fit <- m6@stanfit
+posterior_m6 <- as.matrix(m6_fit)
+
+# plot m6
+params <- c(names(m6_fit)[grep("a", names(m6_fit))],
+            names(m6_fit)[grep("b", names(m6_fit))])
+
+mcmc_areas(
+  posterior_m6, 
+  pars = params,
+  prob = 0.8,
+  prob_outer = 0.999,
+  point_est = "mean"
+) + ggtitle("m6 parameter estimates")
+
+```
+
+
+Again, the model without the `leaf` variable, namely model `m6.1`, performs the worst, in comparison to `m6` and `m6.2`. It does not capture the raw data as well as the other two models, as it underpredicts occasions where herbivore damage is zero of both native and invasive species, predicting 45% out of the 53% proportion of zeroes. Posterior predictive checks of `m6` simulates about 50% zeroes, while `m7.2` simulates about 48%, similar to previous well-performing models. As well, similar to previous models, the proportions of herbivore measures predicted that are zero are underpredicted.   
+
+```{r}
+# generate posterior predictions with sim
+y_rep6 <- sim(m6, n = 500)
+y_rep6.1 <- sim(m6.1, n = 500)
+y_rep6.2 <- sim(m6.2, n = 500)
+
+# proportion zero
+prop_zero(y_rep6)
+prop_zero(y_rep6.1)
+prop_zero(y_rep6.2)
+
+# plot m6
+ppc_dens_overlay(y, y_rep6[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m6 posterior predictions")
+ppc_stat_grouped(y_avg, y_rep6, stat = "prop_zero", binwidth = 0.005, group = d_town_slim$species) +
+   ggtitle("Proportion of 0s predicted by m6")
+
+# plot m6.1
+ppc_dens_overlay(y, y_rep6.1[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m6.1 posterior predictions")
+ppc_stat_grouped(y_avg, y_rep6.1, stat = "prop_zero", binwidth = 0.005, group = d_town_slim$species) +
+   ggtitle("Proportion of 0s predicted by m6.1")
+
+# plot m6.2
+ppc_dens_overlay(y, y_rep6.2[1:50, ]) + scale_x_continuous(trans ="log1p") + ggtitle("m6.2 posterior predictions")
+ppc_stat_grouped(y_avg, y_rep6.2, stat = "prop_zero", binwidth = 0.005, group = d_town_slim$species) +
+   ggtitle("Proportion of 0s predicted by m6.2")
+```
+
+Apart from slightly underpredicting the proportion of zeroes, another issue with these models is that none are able to predict the maximum recorded herbivory damage of 50%. In fact, the distribution of the maximum value among models is around 10%. This can either be a good indication that the model is not overfitting very rare instances of high levels of herbivore damage. Looking at the 95th percentile estimates, the model appears to be able to capture the raw data. 
+
+```{r}
+stat1_m6.2 <- ppc_stat(y, y_rep6.2, stat = "max", binwidth = 1) + ggtitle("Maximum m6.2 estimates")
+stat1_m7.2 <- ppc_stat(y, y_rep7.2, stat = "max", binwidth = 1) + ggtitle("Maximum m7.2 estimates")
+
+grid.arrange(stat1_m6.2, stat1_m7.2, nrow = 2)
+
+q95 <- function(y) quantile(y, 0.95)
+stat_m6.2 <- ppc_stat(y, y_rep6.2, stat = "q95", binwidth = 0.01) + ggtitle("95th percentile m6.2 estimates")
+stat_m7.2 <- ppc_stat(y, y_rep7.2, stat = "q95", binwidth = 0.01) + ggtitle("95th percentile m7.2 estimates")
+
+grid.arrange(stat_m6.2, stat_m7.2, nrow = 2)
+```
+
+
+
+## Model 8: Mixture Models
+
+A final model that was assessed was a zero-inflated model, largely to investigate the unexpectedly large effect of `leaf` on herbivory. Frequently, one leaf from an individual was not herbivorized, even though the other two leaves were damaged. Recall that about 76% of all leaves had 0 recorded herbivory, but only about 53% of all individual plants were completely free from damage. Thus, there are two ways for a leaf to have no recorded herbivory: the entire plant did not face any herbivores so all three leaves have zero damage; or, the plant did face herbivores but one or two of the leaves were undamaged. I use a mixture model to encapsulate these two processes that can both result in zeroes.
+
+The structure of the zero-inflated likelihood is as follows: individual plants either have no herbivory damage (`p_zero`) or may have damage; if plants are damaged, individual leaves may be damaged ($herb > 0$) or may not be damaged ($herb = 0$). If plants have no herbivore damage at all, then it guarantees that all three leaves of the plants have no herbivore damage. However, if plants are damaged in some capacity, then the `herb` is binomially distributed.
+
+I ran one mixture models just to get an estimate of the number of individual plants without herbivory damage of each species (note: I couldn't get `dzibinom` to run and I couldn't find any examples, so in this case I just used `dzipois` and a `logit` link). The model is:
+$$$$
+
+
+The `precis` output is displayed below, which I use to calculate MAP estimates, as well as the trace plots. The chains look healthy, as it displays stationarity, good mixing and convergence. *T. lacerum*, species 1, has a higher estimate of the parameter `binom_herb`, indicating that the model believes the native species is more likely to not be damaged at all. The parameter estimates for herbivore damage is the same between the two species, indicating there is no difference percent damage between the two species, so long as there is herbivore damage.
+
+```{r}
+m8 <- ulam(
+   alist(
+      herb ~ dzipois(p_zero, 100, lambda),
+      logit(lambda) <- b[species],
+      logit(p_zero) <- binom_herb[species],
+      
+      # priors
+      b[species] ~ dnorm(1, 0.5),
+      binom_herb[species] ~ dnorm(2, 5)
+   ), data = d_town_slim, log_lik = TRUE, chains = 4, cores = 4,
+)
+
+precis(m8, depth = 2)
+traceplot(m8)
+
+# m8 estimates
+m8_fit <- m8@stanfit
+posterior_m8 <- as.matrix(m8_fit)
+
+params <- c(names(m8_fit)[grep("a", names(m8_fit))],
+            names(m8_fit)[grep("b", names(m8_fit))])
+
+mcmc_areas(
+  posterior_m8, 
+  pars = params,
+  prob = 0.8,
+  prob_outer = 0.999,
+  point_est = "mean"
+) + ggtitle("m8 parameter estimates")
+```
+
+I used `inv_logit` to gather the MAP estimates. There is a 81% chance that *T. lacerum* will not herbivorized, and a lower value of 68% that *T. officinale* will not herbivorized. If there are herbivores present (as indicated by herbivore damage on at least one of the three leaves), an individual plant faces about 2.69% herbivore damage per each leaf, and this is the same between the two species. 
+```{r}
+inv_logit(1.48) 
+inv_logit(0.75)
+
+exp(0.99)
+```
+
+
+
+# Discussion
+
+The parameter estimates from the well-performing models provide evidence that herbivore damage is species-dependent, but there was little evidence to support the hypothesis that sites will affect herbivore damage. All of the models failed to predict extremely high levels of herbivore damage, and occassionally underpredicted the high proportions of individual plants that are not damaged at all. These models are a good starting point in addressing questions regarding plant invasions in the north, a relatively understudied field. Using models to pinpoint some of the variables involved in limiting non-native species invasion is an integral first step, especially if data is difficult to collect in remote areas.
+
+## Effects of `site` and `leaf` on herbivory of individual plants
+
+There was little evidence to support site as an important variable that determines herbivore damage. In all five sites, the invasive *T. officnale* had greater herbivore damage than *T. lacerum*. Surprisingly, closer examination of the `precis` plots from models `m6` and `m7` suggest instead that the effect of site may be sequential but opposite of previously-reported trends of herbivory. The parameter estimates for sites 1 and 2 were consistently predicted to have a larger positive effect on herbivory, sites 3 and 4 had close to no effect, and site 5 parameter estimates consistently had a negative effect on herbivory. Thus, this trend suggests, albeit weakly, that individuals in more disturbed sites face have greater herbivore damage than individuals in less disturbed sites.
+
+This was surprising, as previous research has found that anthropogenically-disturbed sites have lower herbivore pressure [@lakeInvasionSuccessExotic2004]. Disturbed sites have abiotic ameliorations, such nutrient additions and shelter from herbivores. Non-native species benefit more greatly to these changes than native species, and can reach higher densities than native species in the introduced ranges [@williamsTestingHypothesesExotic2010]. In Churchill, there have been over a hundred non-native species recorded within the town and supporting disturbed areas, reflecting its history as a grain and shipping port. However, these species have not spread into surrounding natural environments, presumably because of suboptimal abiotic conditions and greater biotic pressure, such as competition with native species and herbivory. The models here suggest that herbivory may not be the dominant pressure preventing invasion success in Churchill, making it imperative to also study abiotic and other biotic factors. Another explanation for the unexpected trend in the site variable is the close proximity of sites to each other. The two sites out of town were about 5 kilometers away, and the three sites within town were within blocks of each other; this may have resulted in similar levels of herbivore damage. It may be interesting for future studies to sample herbivory on a latitudinal gradient, perhaps from tundra to boreal forest, in order to closely examine herbivore pressures across larger ranges and in different biomes. Finally, different sites may have different *Taraxacum* plant densities. Previous work suggests that greater density of herbivore-tolerant plant species may be able to reduce herbivore pressure on other individuals, such as herbivore-susceptible species or younger individuals of a smaller plant size [@castagneyrolPlantApparencyOverlooked2013]. Conversely, greater plant density may have resulted in higher levels of competition between the two species, and the less competitively-superior species may be more vulnerable to herbivore damage. These other characteristics of site, such as plant density and average plant size, may also be critical factors to consider in relation to plant invasion.
+
+Unexpectedly, the leaf variable was an important parameter in the models. Arguably, this can be attributed to methodology than the biology of invasive and native plants. Since three herbivory measures of the three largest leaves were recorded per plant, designating three replicates, there may have been some instinctive patterning to denote the largest leaf as `1` and the smallest leaf as `3` during data collection. My initial thought was that it is likely that the largest and oldest leaves may have accrued more damage than the others, resulting in greater parameter estimates of leaf 1 than leaf 3. However, the opposite trend appeared, in that leaf 1 parameter estimates were negative, while leaf 3 parameter estimates straddled 0, indicating no effect on herbivory. This may be explaned by *Taraxacum* leaf morphology. *Taraxacum* leaves are arranged in a rosette, and the oldest leaves are closest to the ground, making them somewhat sheltered by newer leaves that have grown on either side. 
+
+The mixture model reiterates the differences between the two species regarding the high proportion of zeros. This model predicted that it is more likely that *T. lacerum* will not have any herbivore damage. However, if there are herbivores present, there is no difference in the percent of damage between the two species. This pattern is supported by previous research comparing herbivore defense and tolerance between native and invasive species. Invasive species typically succeed in areas where they can escape herbivores of their native range as well as local herbivores in their invaded range, but this pattern of enemy release does not always transpire, nor does it guarantee improved plant performance [@chunRoleEnemyRelease2010]. In Churchill, *T. officinale* is never found out of the town footprint, suggesting that it does not benefit from enemy release. The zero-inflated model suggests that this species may be preferentially damaged by herbivores. An alternate hypothesis is that *T. officinale* is much more abundant in sites where both species occur. These hypotheses will require further field experimental testing and modelling.
+
+
+## Underpredicting extreme herbivore damage
+
+Out of 540 measures of leaf herbivory, only one leaf of one individual had 50% damage. This may have represented an anomoly in the recorded herbivory measures. However, there is a risk that the models are underfitting extremely large values. Herbivory sampling was completed on 20 randomly-selected *T. lacerum* and 20 randomly-selected *T. officinale* within a site, but there may have been other individuals with higher herbivory damage levels that were not sampled. Within this data set, underfitting does not appear to be a large cause for concern, since the models are learning from the data and are able to capture the raw data at the 95th percentile. However, if resampling or further investigation of herbivory damage continues to find instances of high herbivore damage, then a model's inability to predict these instances is concerning. High levels of damage are rare, but the ability to accurately predict these rare instances may be important knowledge, especially if the individual plant is an invader that is failing to invade at a specific site.
+
+The decision to use *Taraxacum* species as model species was largely based on the occurrence of both a native and an invasive species in Churchill. This makes it easier to compare herbivory damage levels of native and invader without the need to control for life history factors or abiotic requirements, which may have been necessary if data was instead collected from plant species of different genera. However, the low levels of herbivore damage is not universal in northern environments. Although individual plants face lower levels of herbivore pressure at higher latitudes, there is a myriad of other species that face relatively higher levels of herbivore damage. For example, *Lineria vulgaris* is a species of toadflax that does not set viable seed, so it will fail to invade areas if it cannot vegetatively reproduce due to high herbivore pressure. Another potential focal species is *Thlaspi arvense* that is damaged by vertebrate and insect herbivory throughout temperate and subarctic regions. Collecting and modelling herbivore damage on other species that face higher levels of herbivore damage may offer greater insight into biotic limits to invasion.
+
+# References
+
